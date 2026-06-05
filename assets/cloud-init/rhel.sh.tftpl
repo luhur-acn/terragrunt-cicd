@@ -1,0 +1,84 @@
+#!/bin/bash
+# cloud-init bootstrap for ${hostname} (RHEL 8/9)
+# Rendered by Terraform templatefile() — do not edit the rendered copy.
+set -euxo pipefail
+exec > >(tee -a /var/log/cloud-init-bootstrap.log) 2>&1
+
+rm -f /var/lib/cloud-init-bootstrap.done /var/lib/cloud-init-bootstrap.failed
+trap 'touch /var/lib/cloud-init-bootstrap.failed' ERR
+
+retry() {
+  local n=0 max=3 delay=5
+  until "$@"; do
+    n=$((n + 1))
+    if [ "$n" -ge "$max" ]; then
+      echo "retry: giving up on: $*" >&2
+      return 1
+    fi
+    echo "retry: attempt $n failed, sleeping $delay s" >&2
+    sleep "$delay"
+    delay=$((delay * 2))
+  done
+}
+
+if ! curl -sf -X PUT \
+      -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+      http://169.254.169.254/latest/api/token >/dev/null; then
+  echo "IMDSv2 token request failed — refusing to bootstrap on IMDSv1" >&2
+  exit 1
+fi
+
+# 1. Hostname
+hostnamectl set-hostname '${hostname}'
+
+# 2. Timezone
+timedatectl set-timezone '${timezone}'
+
+# 3. Admin group
+getent group '${admin_group}' >/dev/null || groupadd '${admin_group}'
+
+# 4. Admin users (locked until passwords are set out-of-band)
+%{ for user in admin_users ~}
+if ! id -u '${user}' >/dev/null 2>&1; then
+  useradd -m -d '/home/${user}' -s /bin/bash '${user}'
+  passwd -l '${user}'
+fi
+usermod -aG '${admin_group}' '${user}'
+%{ endfor ~}
+
+# 5. Sudoers drop-in (validated before install)
+cat > /etc/sudoers.d/acn-tmt-linux.tmp <<EOF
+%${admin_group} ALL=(ALL:ALL) ALL
+%{ for user in admin_users ~}
+${user} ALL=(ALL:ALL) ALL
+%{ endfor ~}
+EOF
+chown root:root /etc/sudoers.d/acn-tmt-linux.tmp
+chmod 0440 /etc/sudoers.d/acn-tmt-linux.tmp
+visudo -cf /etc/sudoers.d/acn-tmt-linux.tmp
+mv /etc/sudoers.d/acn-tmt-linux.tmp /etc/sudoers.d/acn-tmt-linux
+
+# 6. SSH: enforce no root login regardless of AMI default.
+if grep -qE '^[#[:space:]]*PermitRootLogin' /etc/ssh/sshd_config; then
+  sed -i 's/^[#[:space:]]*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+else
+  echo 'PermitRootLogin no' >> /etc/ssh/sshd_config
+fi
+sshd -t
+systemctl reload sshd || systemctl restart sshd
+
+# 7. OS update + sysstat
+retry dnf -y update
+retry dnf -y install sysstat
+
+# 8. SSM agent (not preinstalled on stock RHEL AMIs)
+if ! rpm -q amazon-ssm-agent >/dev/null 2>&1; then
+  retry dnf -y install "https://s3.${region}.amazonaws.com/amazon-ssm-${region}/latest/linux_amd64/amazon-ssm-agent.rpm"
+fi
+
+# 9. Enable services
+systemctl enable --now sysstat-collect.timer
+systemctl enable --now sysstat-summary.timer
+systemctl enable --now amazon-ssm-agent
+
+touch /var/lib/cloud-init-bootstrap.done

@@ -1,0 +1,39 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+tfplan.json
+
+# Terragrunt cache
+.terragrunt-cache/
+
+# Sensitive files
+*.pem
+*.key
+terraform.tfvars
+!bootstrap/runner/terraform.tfvars.example
+
+# Local backend states
+.terraform-states/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Plan output files
+plan_output.txt
+plan_raw.txt
+apply_output.txt
+apply_output_clean.txt
+apply_summary.md
+plan-summary-*.md
+final-summary.md

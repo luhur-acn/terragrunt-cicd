@@ -1,0 +1,97 @@
+name: Terragrunt Apply
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "environments/**"
+  workflow_dispatch:
+    inputs:
+      target_dir:
+        description: "Specific terragrunt directory or region to apply (e.g. environments/dev/us-east-1). Leave empty to apply all changed regions."
+        required: false
+        type: string
+
+permissions:
+  id-token: write       # Required for AWS OIDC authentication
+  contents: read
+  pull-requests: write  # Required for posting apply results to merged PR
+
+# Serialize applies to main: never cancel a run mid-apply (that would orphan a
+# held state lock), so new pushes queue behind the in-flight deploy.
+concurrency:
+  group: tg-apply-main
+  cancel-in-progress: false
+
+jobs:
+  # Detect which regions changed (apply runs at region level = run --all).
+  detect-changes:
+    # runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      regions: ${{ steps.set-matrix.outputs.regions }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Changed Terragrunt Regions
+        id: set-matrix
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.target_dir }}" ]; then
+            # Resolve the target (a region, or a unit) up to its region.hcl.
+            REGIONS=$(printf '%s/region.hcl\n' "${{ github.event.inputs.target_dir }}" | bash .github/scripts/resolve-units.sh region.hcl)
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            REGIONS=$(find environments -name region.hcl | bash .github/scripts/resolve-units.sh region.hcl)
+          else
+            BEFORE_SHA="${{ github.event.before }}"
+            [ "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ] && BEFORE_SHA="HEAD~1"
+            REGIONS=$(git diff --name-only "$BEFORE_SHA" "${{ github.sha }}" | bash .github/scripts/resolve-units.sh region.hcl)
+          fi
+          echo "regions=${REGIONS:-[]}" >> "$GITHUB_OUTPUT"
+          echo "Regions to apply: ${REGIONS:-[]}"
+
+  # Apply all units within each region. max-parallel: 1 = regions are sequential.
+  apply:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.regions != '[]' && needs.detect-changes.outputs.regions != '' }}
+    # runs-on: self-hosted
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        region: ${{ fromJson(needs.detect-changes.outputs.regions) }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Initialize Apply Summary
+        run: |
+          mkdir -p "${{ matrix.region }}"
+          echo "### Terragrunt Apply Summary — Job interrupted or failed" \
+            > "${{ matrix.region }}/apply_summary.md"
+
+      - name: Setup Terragrunt Toolchain
+        uses: ./.github/actions/setup-terragrunt
+        with:
+          aws-role: arn:aws:iam::255754134813:role/GitHubActionApplyRole
+          aws-region: us-east-1
+
+      - name: Terragrunt Init & Apply (run-all)
+        env:
+          TG_NON_INTERACTIVE: "true"
+          TERRAGRUNT_NON_INTERACTIVE: "true"
+        run: bash .github/scripts/apply.sh "${{ matrix.region }}"
+
+      - name: Post Apply Results to Merged PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/post-apply-comment.sh "${{ matrix.region }}"
+
+      - name: Cleanup State Locks (On Failure or Timeout)
+        if: failure() || cancelled()
+        run: bash .github/scripts/cleanup-state-lock.sh "${{ matrix.region }}"

@@ -1,0 +1,181 @@
+name: Terragrunt Plan
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "environments/**"
+  workflow_dispatch:
+    inputs:
+      target_dir:
+        description: "Specific terragrunt directory to plan (e.g. environments/dev/us-east-1/vpc). Leave empty to plan all changed directories."
+        required: false
+        type: string
+
+permissions:
+  id-token: write       # Required for AWS OIDC authentication
+  contents: read
+  pull-requests: write  # Required for posting PR comments
+
+# Supersede in-flight plans for the same PR — only the latest commit's plan
+# matters, and this keeps overlapping runs from contending on (or clobbering)
+# the same remote-state lock.
+concurrency:
+  group: tg-plan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Detect which Terragrunt units changed (or use the manual override).
+  detect-changes:
+    # runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Changed Terragrunt Units
+        id: set-matrix
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.target_dir }}" ]; then
+            MATRIX=$(printf '%s\n' "${{ github.event.inputs.target_dir }}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            MATRIX=$(find environments -name terragrunt.hcl | bash .github/scripts/resolve-units.sh terragrunt.hcl)
+          else
+            MATRIX=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" | bash .github/scripts/resolve-units.sh terragrunt.hcl)
+          fi
+          echo "matrix=${MATRIX:-[]}" >> "$GITHUB_OUTPUT"
+          echo "Affected units: ${MATRIX:-[]}"
+
+  # Run terragrunt plan for each changed unit (parallel matrix).
+  plan:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.matrix != '[]' && needs.detect-changes.outputs.matrix != '' }}
+    # runs-on: self-hosted
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terragrunt Toolchain
+        uses: ./.github/actions/setup-terragrunt
+        with:
+          aws-role: arn:aws:iam::255754134813:role/GitHubActionPlanRole
+          aws-region: us-east-1
+          tf-summarize-version: "0.3.10"
+
+      - name: Terragrunt Init & Plan
+        id: plan
+        env:
+          TG_NON_INTERACTIVE: "true"
+          TERRAGRUNT_NON_INTERACTIVE: "true"
+        run: bash .github/scripts/plan-unit.sh "${{ matrix.dir }}"
+
+      - name: Upload Plan Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan-summary-${{ strategy.job-index }}
+          path: ${{ matrix.dir }}/plan-summary-*.md
+
+      - name: Export Rendered TF and Plan JSON
+        if: success()
+        run: bash .github/scripts/export-rendered-tf.sh "${{ matrix.dir }}" "${{ github.workspace }}/rendered-tf"
+
+      - name: Upload Rendered TF Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-tf-${{ strategy.job-index }}
+          path: ${{ github.workspace }}/rendered-tf/
+
+      - name: Cleanup State Lock (On Failure or Timeout)
+        if: failure() || cancelled()
+        run: bash .github/scripts/cleanup-state-lock.sh "${{ matrix.dir }}"
+
+  # Security scanning: KICS + Checkov (runs after the plan job).
+  security-scan:
+    needs: [detect-changes, plan]
+    # Run if detect-changes succeeded, even if plan was skipped (empty matrix).
+    if: ${{ always() && !cancelled() && needs.detect-changes.result == 'success' }}
+    # runs-on: self-hosted
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Rendered TF Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rendered-tf-*
+          path: ${{ github.workspace }}/rendered-tf
+          merge-multiple: true
+        continue-on-error: true # In case plan was skipped / no changed files
+
+      - name: Run KICS Scan
+        id: kics
+        continue-on-error: true
+        run: bash .github/scripts/run-kics.sh "${{ github.workspace }}"
+
+      - name: Run Checkov Scan
+        id: checkov
+        continue-on-error: true
+        run: bash .github/scripts/run-checkov.sh "${{ github.workspace }}"
+
+      - name: Build Security Summary Markdown
+        id: summary
+        run: |
+          bash .github/scripts/security-summary.sh
+          echo "=== Security Summary Preview ==="
+          cat security-results/security-summary.md
+
+      - name: Upload Security Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-summary
+          path: |
+            security-results/security-summary.md
+            security-results/kics-results.json
+            security-results/kics-results.sarif
+            security-results/results_json.json
+
+      - name: Enforce Security Policy
+        if: steps.summary.outputs.issues_found == 'true'
+        run: |
+          echo "::error::Failing job because ${{ steps.summary.outputs.issues_count }} CRITICAL/HIGH security issues were found."
+          exit 1
+
+  # Combine plan summaries + security results and post a single PR comment.
+  comment:
+    needs: [plan, security-scan]
+    # runs-on: self-hosted
+    timeout-minutes: 10
+    if: always()
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Plan Summaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: plan-summary-*
+          merge-multiple: true
+
+      - name: Download Security Summary
+        uses: actions/download-artifact@v4
+        with:
+          name: security-summary
+          path: security-results
+        continue-on-error: true
+
+      - name: Combine Summaries & Post PR Comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash .github/scripts/build-and-post-comment.sh

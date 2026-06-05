@@ -1,0 +1,51 @@
+name: Setup Terragrunt
+description: >-
+  Configure AWS OIDC credentials and install pinned Terraform / Terragrunt
+  (and optionally tf-summarize) binaries onto PATH.
+
+inputs:
+  aws-role:
+    description: IAM role ARN to assume via OIDC.
+    required: true
+  aws-region:
+    description: AWS region.
+    required: false
+    default: us-east-1
+  terraform-version:
+    description: Terraform version to install.
+    required: false
+    default: "1.11.0"
+  terragrunt-version:
+    description: Terragrunt version to install.
+    required: false
+    default: "1.0.4"
+  tf-summarize-version:
+    description: tf-summarize version to install; leave empty to skip it.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Configure AWS Credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws-role }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Cache Binaries
+      id: cache-binaries
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/bin
+        key: tf-${{ inputs.terraform-version }}-tg-${{ inputs.terragrunt-version }}-tfsum-${{ inputs.tf-summarize-version }}-v1
+
+    - name: Install Binaries
+      shell: bash
+      run: |
+        bash "${GITHUB_WORKSPACE}/.github/scripts/install-binaries.sh" \
+          "${GITHUB_WORKSPACE}/bin" \
+          "${{ inputs.terraform-version }}" \
+          "${{ inputs.terragrunt-version }}" \
+          "${{ inputs.tf-summarize-version }}" \
+          "${{ steps.cache-binaries.outputs.cache-hit }}"
