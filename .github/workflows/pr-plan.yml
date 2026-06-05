@@ -5,11 +5,11 @@ on:
     branches:
       - main
     paths:
-      - "environments/**"
+      - "live/**"
   workflow_dispatch:
     inputs:
       target_dir:
-        description: "Specific terragrunt directory to plan (e.g. environments/dev/us-east-1/vpc). Leave empty to plan all changed directories."
+        description: "Specific terragrunt directory to plan (e.g. live/dev/us-east-1/vpc). Leave empty to plan all changed directories."
         required: false
         type: string
 
@@ -44,7 +44,7 @@ jobs:
           if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.target_dir }}" ]; then
             MATRIX=$(printf '%s\n' "${{ github.event.inputs.target_dir }}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
           elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            MATRIX=$(find environments -name terragrunt.hcl | bash .github/scripts/resolve-units.sh terragrunt.hcl)
+            MATRIX=$(find live -name terragrunt.hcl | bash .github/scripts/resolve-units.sh terragrunt.hcl)
           else
             MATRIX=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" | bash .github/scripts/resolve-units.sh terragrunt.hcl)
           fi
