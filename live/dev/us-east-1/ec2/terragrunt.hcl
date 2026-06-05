@@ -52,3 +52,4 @@ inputs = {
   sg_id_map     = dependency.vpc.outputs.sg_ids
   vpc_id_map    = dependency.vpc.outputs.vpc_ids
 }
+
