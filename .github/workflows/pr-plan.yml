@@ -28,7 +28,7 @@ concurrency:
 jobs:
   # Detect which Terragrunt units changed (or use the manual override).
   detect-changes:
-    # runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
@@ -55,7 +55,7 @@ jobs:
   plan:
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.matrix != '[]' && needs.detect-changes.outputs.matrix != '' }}
-    # runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -104,7 +104,7 @@ jobs:
     needs: [detect-changes, plan]
     # Run if detect-changes succeeded, even if plan was skipped (empty matrix).
     if: ${{ always() && !cancelled() && needs.detect-changes.result == 'success' }}
-    # runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout Repository
@@ -154,7 +154,7 @@ jobs:
   # Combine plan summaries + security results and post a single PR comment.
   comment:
     needs: [plan, security-scan]
-    # runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     if: always()
     steps:
