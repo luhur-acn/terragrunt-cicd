@@ -35,4 +35,3 @@ generate "inventory" {
     network_acls      = local.network_acls
   })
 }
-
