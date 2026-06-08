@@ -15,12 +15,12 @@ valid=""
 while IFS= read -r path; do
   [ -z "$path" ] && continue
   case "$path" in
-    environments/*) ;;
+    live/*) ;;
     *) continue ;;
   esac
 
   dir=$(dirname "$path")
-  while [ -n "$dir" ] && [ "$dir" != "." ] && [ "$dir" != "/" ] && [ "$dir" != "environments" ]; do
+  while [ -n "$dir" ] && [ "$dir" != "." ] && [ "$dir" != "/" ] && [ "$dir" != "live" ]; do
     if [ -f "$dir/$MARKER" ]; then
       valid="${valid}${dir}"$'\n'
       break

@@ -5,11 +5,11 @@ on:
     branches:
       - main
     paths:
-      - "environments/**"
+      - "live/**"
   workflow_dispatch:
     inputs:
       target_dir:
-        description: "Specific terragrunt directory or region to apply (e.g. environments/dev/us-east-1). Leave empty to apply all changed regions."
+        description: "Specific terragrunt directory or region to apply (e.g. live/dev/us-east-1). Leave empty to apply all changed regions."
         required: false
         type: string
 
@@ -44,7 +44,7 @@ jobs:
             # Resolve the target (a region, or a unit) up to its region.hcl.
             REGIONS=$(printf '%s/region.hcl\n' "${{ github.event.inputs.target_dir }}" | bash .github/scripts/resolve-units.sh region.hcl)
           elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            REGIONS=$(find environments -name region.hcl | bash .github/scripts/resolve-units.sh region.hcl)
+            REGIONS=$(find live -name region.hcl | bash .github/scripts/resolve-units.sh region.hcl)
           else
             BEFORE_SHA="${{ github.event.before }}"
             [ "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ] && BEFORE_SHA="HEAD~1"

@@ -46,8 +46,8 @@ resource "aws_iam_role" "github_plan" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:luhur-acn/terragrunt-cicd:pull_request",
-              "repo:luhur-acn/terragrunt-cicd:ref:refs/heads/main",
+              "repo:/luhur-acn/terragrunt-cicd:pull_request",
+              "repo:/luhur-acn/terragrunt-cicd:ref:refs/heads/main",
             ]
           }
         }
@@ -107,7 +107,7 @@ resource "aws_iam_role" "github_apply" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = [
-              "repo:luhur-acn/terragrunt-cicd:ref:refs/heads/main",
+              "repo:/luhur-acn/terragrunt-cicd:ref:refs/heads/main",
             ]
           }
         }
